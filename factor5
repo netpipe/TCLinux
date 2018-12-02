@@ -1,0 +1,49 @@
+#!/bin/bash
+#Factor5 Package Build / Verification System for TCLinux
+echo "Not Ready For Production Yet"
+echo "verify that you have read the shell script and know what you want to do"
+echo "type n to exit"
+read $in
+exit
+
+if [ $in == "n" ]
+then
+	exit
+fi
+
+
+#TCE="/mnt/sda1/tce"
+TCE=$(tce-setdrive | cut -d "," -f 2)
+
+if [ $1 = build ]
+then
+	if [ -d ./BuildRoot ]
+	echo "directory exists do you want to clean it"
+	read $in
+		if $in = yes | $in = "y"
+		then
+			rm ./BuildRoot -R
+			mkdir BuildRoot
+		else
+			mkdir BuildRoot
+			echo "place files into BuildRoot"
+			read
+			mksquashfs ./BuildRoot/$2 
+		fi
+fi
+
+#installs itself
+if [ $1 = install ]
+then
+	cp $2.tcz $TCE/optional
+	echo "$2.tcz" >> $TCE/onboot.lst
+	#if $2=all
+	#cp ./Packages/ $home/tce/optional
+fi
+
+if [ $1 = clean ]
+then
+	rm ./BuildRoot -R
+fi
+
+
