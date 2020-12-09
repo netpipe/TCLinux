@@ -1,0 +1,43 @@
+//https://www.tuxfixer.com/convert-qcow2-to-raw-image-raw-to-qcow2-image/
+
+
+qemu-img convert -f qcow2 -O raw image.qcow2 image.img
+qemu-img convert -f raw -O qcow2 image.img image.qcow2
+
+
+
+
+http://ask.xmodulo.com/mount-qcow2-disk-image-linux.html
+
+
+
+
+GNU tar normally includes symlinks in the tarball it generates. If you want it to include the file the symlink points to instead then pass it -h/--dereference when creating the tarball.
+
+
+libguestfs-tools
+.
+
+ $ sudo guestmount -a /path/to/qcow2/image -m <device> /path/to/mount/point 
+
+ $ sudo guestmount -a /var/lib/libvirt/images/xenserver.qcow2 -m /dev/sda1 /mnt 
+
+ $ sudo guestmount -a /var/lib/libvirt/images/xenserver.qcow2 -m /dev/sda1 --ro /mnt 
+ $ sudo guestunmount /mnt 
+
+
+
+qemu-img  qemu-utils 
+
+$ sudo modprobe nbd max_part=8
+$ sudo qemu-nbd --connect=/dev/nbd0 /path/to/qcow2/image 
+
+ $ sudo qemu-nbd --connect=/dev/nbd0 /var/lib/libvirt/images/xenserver.qcow2 
+
+ $ sudo fdisk /dev/nbd0 -l
+
+Finally, choose any one partition (e.g., /dev/nbd0p1) and mount it to a local mount point (e.g., /mnt).
+$ sudo mount /dev/nbd0p1 /mnt 
+
+$ sudo umount /mnt
+$ sudo qemu-nbd --disconnect /dev/nbd0 

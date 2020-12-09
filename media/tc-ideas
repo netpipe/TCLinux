@@ -1,0 +1,23 @@
+archive manager for squashfs files
+rpm/deb converter to shashfs files
+
+
+github based package manager for base install
+
+http://distro.ibiblio.org/tinycorelinux/9.x/x86/tcz/src/
+
+
+qemu-img resize /var/lib/libvirt/images/web.qcow2 +2G
+
+qemu-img convert test.qcow2 -O raw disk.img
+sudo dd if=/media/dave/disk.img of=/dev/sdX
+or
+qemu-img convert test.qcow2 -O raw /dev/LVMGROUP/LVMDisc
+qemu-img convert -f qcow2 -O raw my-qcow2.img /dev/sdb
+
+
+su - guru
+/sbin/swapon -s  # check
+sudo /sbin/swapoff -a
+/sbin/swapon -s  # check
+exit
