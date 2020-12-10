@@ -3,7 +3,7 @@
 #in=$(date) # check if date older than tmpdate in home
 #in="$(wget -qS --max-redirect 0 http://bing.com/ 2>&1|grep -oiP 'Date: \K.+')"
 #wget -qS --max-redirect 0 http://bing.com/ 2>&1|grep -oi 'Date: \K.+' > ~/.tmpdate
-wget -qSO- --max-redirect=0 googl.com 2>&1 | grep Date: | cut -d" " -f5-8 > ~/.tmpdate
+wget -qSO- google.com 2>&1 | grep Date: | cut -d" " -f5-8 > ~/.tmpdate
 #echo "$in" > ~/.tmpdate
 in=$(cat ~/.tmpdate)
 if [ "$in" == '' ]; then
