@@ -10,7 +10,7 @@ thenuse factor5 to build packages it can also install itself without using insta
 > it would be nice to get a build script and a torrent for a complete working version compiled from source. somethings are out of date but still do the job, if your looking for speed enhancements try updating some of the packages. a git repository with all the build scripts needed would work too could even retrieve everything from github.
 
 
-wget -r --no-parent --reject "index.html*,tar,zip,bz,xz,7z,gz,gz2" tinycorelinux.net/13.x/arch/tcz/src/ -k
+wget -r --no-parent --reject "index.html*,tar,zip,bz,xz,7z,gz,gz2,bz2" tinycorelinux.net/13.x/arch/tcz/src/ -k
 
 
 	www.netpipe.ca
