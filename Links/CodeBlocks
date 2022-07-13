@@ -1,2 +1,4 @@
-#!/bin/bash
+#!/bin/sh
+tce-load -i compiletc
+
 codeblocks
