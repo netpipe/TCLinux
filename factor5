@@ -23,7 +23,7 @@ then
 	read $in
 		if [[ $in = "yes" || $in = "y" ]]
 		then
-			#rm ./BuildRoot -R
+			rm ./BuildRoot -R
 			mkdir BuildRoot
 		else
 			mkdir BuildRoot
