@@ -1,0 +1,15 @@
+#!/bin/ash
+#http://forum.tinycorelinux.net/index.php?topic=2061.0
+#######  tce-remove script, by jpeters
+######## Removes only files on .list
+######   Updated to remove tce and tcz list files that are installed to ram
+######  Comments: use only basename.
+#####    Example:  "tce-remove gnumeric"
+#####    Option -o for /tce/optional:   "tce-remove -o oo2"  
+
+MIRROR="$(awk '/Mirror/ {print $2}' /opt/.tcrc)"
+TCEDIR="$(cat /opt/.tce_dir)"
+TCEOP="${TCEDIR}/optional"
+
+
+[ -d /tmp/tce-list ] && sudo rm -R /tmp/tce-list  
