@@ -1,0 +1,200 @@
+#!/bin/sh
+# polikuo 2018
+. /etc/init.d/tc-functions
+useBusybox
+checknotroot
+
+unset OPT WGET INSTALL SUPPRESS ORDER RETURN
+
+KERNELVER=$(uname -r)
+LOG_DIR="/var/log/tce-tool"
+CATALOG="${LOG_DIR}/cata.log"
+ERR_LOG="${LOG_DIR}/err.log"
+CACHE="${LOG_DIR}/cache.$$"
+TCE_DB="${LOG_DIR}/tce.db"
+
+cd /etc/sysconfig/tcedir/optional
+
+print_help() {
+  echo "Usage: $(basename $0) [-f|-h|-s|--help] tcz_name1 tcz_name2 ...
+  * Note that this catalog tool only loads local extensions.
+  -f            replace link, tceload -fi TCZ.
+  -h, --help    show this help message.
+  -s            suppress terminal output."
+  exit 2
+}
+
+environment() {
+  sudo mkdir -p $LOG_DIR
+  sudo chmod -R 775 $LOG_DIR
+  sudo chgrp -R staff $LOG_DIR
+}
+
+add_to_db() {
+  echo "${1}.tcz"
+  echo "${1}.tcz" | awk '
+  function dep_scan(name, depfile, line) {
+    if (name) {
+      sub(/KERNEL/, KERNELVER, name)
+      depfile = name ".dep"
+      print name
+      while (getline line < depfile > 0)
+        dep_scan(line)
+      close(depfile)
+    }
+  }
+  BEGIN {KERNELVER="'${KERNELVER}'"}
+  {dep_scan($1)}
+  ' | tail -n +2 | sort -u
+  printf '\n'
+}
+
+# main
+# dafault mode tce-load -i
+OPT='-i'
+echo " $* " | grep -q ' \-\-help ' && print_help
+while getopts fhs OPTION
+do
+  case $OPTION in
+    s) SUPPRESS=1 ;;
+    f) OPT='-fi' ;;
+    *) print_help ;;
+  esac
+done
+shift $(expr $OPTIND - 1)
+[ "$#" = 0 ] && print_help
+
+# copy2fs
+if [ -f /etc/sysconfig/tcedir/copy2fs.lst ]; then
+  echo "WARNING! copy2fs.lst found in your tcedir, please disable it.
+  Try mv copy2fs.lst copy2fs.lst.bk" >&2
+  exit 1
+fi
+if [ -f /etc/sysconfig/tcedir/copy2fs.flg ]; then
+  echo "WARNING! copy2fs.flg found in your tcedir, please disable it.
+  Try rm copy2fs.flg" >&2
+  exit 1
+fi
+
+# environment
+[ -d "$LOG_DIR" ] && (:>> $ERR_LOG) 2> /dev/null || environment
+touch $TCE_DB
+
+# trim arguements
+ARGS=''
+for A in $@; do
+  A="${A%.tcz}"
+  A="${A/-KERNEL/-${KERNELVER}}"
+  if [ -f /usr/local/tce.installed/${A##*/} ]; then
+    echo "${A##*/} is already installed!"
+    continue
+  fi
+  # arguements with path
+  if [ $(echo $A | grep '/') ]; then
+    if [ "$(realpath /etc/sysconfig/tcedir/optional)" = "$(realpath ${A%/*})" ]; then
+      # tcedir
+      A=${A##*/}
+    else
+      echo "Please place $A in your tce directory, $A not loaded." >&2
+      continue
+    fi
+  fi
+  # default path
+  if [ -f /etc/sysconfig/tcedir/optional/${A}.tcz ]; then
+    # update database
+    cat $TCE_DB > $CACHE
+    # remove old entry
+    awk 'BEGIN {FS="\n";RS=""} {
+      if ($1 != "'${A}'.tcz") {print;print ""}
+    }' $CACHE > $TCE_DB
+    add_to_db $A >> $TCE_DB
+    ARGS="${ARGS} ${A}"
+    rm -f $CACHE
+  else
+    echo "File /etc/sysconfig/tcedir/optional/${A}.tcz not found" >&2
+    continue
+  fi
+done
+
+# calculate the order to load
+# skip first
+PACKAGES=$(echo $ARGS | cut -d ' ' -f 1)
+for ARG in $(echo $ARGS | grep ' ' | cut -d ' ' -f 2-); do
+  FOUND=0
+  for P in $PACKAGES; do
+    awk 'BEGIN {FS="\n";RS="";R=0}
+      $1 = "'${P}'.tcz" && /\n'${ARG}'\.tcz\n/ {R=1}
+    END {exit R}' $TCE_DB || {
+      FOUND=1
+      break
+    }
+  done
+  if [ "$FOUND" = 0 ]; then
+    # dep not found
+    # append normally
+    PACKAGES=$(
+      echo "$PACKAGES"
+      echo "$ARG"
+    )
+  else
+    # insert before the matched
+    PACKAGES=$(
+      echo "$PACKAGES" | awk '
+        /^'${P}'$/ {print "'${ARG}'"}
+        {print}
+      '
+    )
+  fi
+done
+
+# last catalog entry
+ORDER="$(grep -o ':[0-9]*' $CATALOG 2> /dev/null | tail -1 | tr -d ':')"
+[ $ORDER ] || ORDER=0
+
+# main loop
+for PKG in $PACKAGES; do
+  if [ "$SUPPRESS" = 1 ]; then
+    /usr/bin/tce-load $OPT $PKG 2> /dev/null > $CACHE
+    RETURN="$?"
+  else
+    (
+      set -o pipefail
+      /usr/bin/tce-load $OPT $PKG 2> /dev/null | \
+      tee $CACHE
+    ) 
+    RETURN="$?"
+  fi
+  if [ "$RETURN" == 0 ]; then
+    grep ': OK' $CACHE | sed 's/.tcz: OK//g' >> $CATALOG
+    ORDER=$((ORDER+1))
+  else
+    LOADED=$(grep ': OK' $CACHE | sed 's/.tcz: OK//g')
+    LAST_SUCCESS=''
+    if [ -n "$LOADED" ]; then
+      echo "$LOADED" >> $ERR_LOG
+      echo "$LOADED" >> $CATALOG
+      ORDER=$((ORDER+1))
+      LAST_SUCCESS=$(echo "$LOADED" | tail -1)
+      printf ':%d\t%s\n\n' $ORDER $LAST_SUCCESS | tee -a $CATALOG
+    fi
+    printf ':%s failed\n\n' $PKG >> $ERR_LOG
+    if [  -n "$LAST_SUCCESS" ]; then
+      echo "Please unmount ${LAST_SUCCESS} to restore to previous state" >&2
+      echo "tce-umount ${LAST_SUCCESS}" >&2
+      # Delete the tce.db entry so we can unmount it
+      awk 'BEGIN {FS="\n";RS=""}
+        $1 != "'${PKG}'.tcz" {print;print ""}
+      ' $TCE_DB > $CACHE
+      cat $CACHE > $TCE_DB
+    fi
+    rm -f $CACHE
+    exit 1
+  fi
+  if [ "$SUPPRESS" = 1 ]; then
+    printf ':%d\t%s\n\n' $ORDER ${PKG##*/} >> $CATALOG
+  else
+    printf ':%d\t%s\n\n' $ORDER ${PKG##*/} | tee -a $CATALOG
+  fi
+done
+
+rm -f $CACHE

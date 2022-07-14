@@ -1,0 +1,342 @@
+#!/bin/sh
+# polikuo 2018
+
+LOG_DIR="/var/log/tce-tool"
+CATALOG="${LOG_DIR}/cata.log"
+ERR_LOG="${LOG_DIR}/err.log"
+CACHE="${LOG_DIR}/cache.$$"
+REFRESH_CACHE="${LOG_DIR}/refresh_cache.$$"
+BACKUP="${CATALOG}.bk"
+TCE_DB="${LOG_DIR}/tce.db"
+
+alias awk='busybox awk'
+alias basename='busybox basename'
+alias cat='busybox cat'
+alias cp='busybox cp'
+alias cut='busybox cut'
+alias grep='busybox grep'
+alias id='busybox id'
+alias realpath='busybox realpath'
+alias rm='busybox rm'
+alias sed='busybox sed'
+alias sort='busybox sort'
+alias tail='busybox tail'
+alias tee='busybox tee'
+alias tr='busybox tr'
+alias uname='busybox uname'
+
+if [ $(id -u) -eq 0 ]; then
+  echo "Don't run this as root."
+  exit 1
+fi
+
+print_help() {
+  echo "Usage: $(basename $0) [-f|-h|-s|--help] tcz_name1 tcz_name2 ...
+  -f            ignore X server warning.
+  -h, --help    show this help message.
+  -s            suppress terminal output.
+  To properly unload a tcz,
+  the package must be loaded via tce-catload.
+  Please make sure the packages to be unloaded are not being used.
+  Just in case, it's advisable to kill the X server as well"
+  exit 2
+}
+
+chk_log() {
+  # check catalog
+  # return 0 --> good
+  # return 1 --> next
+  [ -f "/usr/local/tce.installed/${1}" ] || {
+    echo "Warning, ${1} is not installed." >&2
+    return 1
+  }
+  awk '/^:[0-9]*\t'${1}'$/ {exit 1}' $CATALOG && {
+    echo "Error, ${1} is not catalogged." >&2
+    return 1
+  } || {
+    DEP_OF=$(awk 'BEGIN {FS="\n";RS="";R=0} {
+      for (i=2;i<=NF;i++) {
+        if ($i ~ /^'${1}'\.tcz$/) {
+          print $i " is a dependence of " $1
+          R = 1
+        }
+      }
+    }
+    END {exit R}' $TCE_DB)
+    if [ $? = 1 ]; then
+      for A in $ARGS; do
+        DEP_OF=$(echo "$DEP_OF" | grep -v "${A}.tcz$")
+      done
+      if [ -n "$DEP_OF" ]; then
+        echo "$DEP_OF" >&2
+        return 1
+      else
+        return 0
+      fi
+    fi
+    return 0
+  }
+}
+
+prepare_list() {
+  APP_LIST=$(awk "FNR >= ${LINE_S} && FNR < ${LINE_E}" $CATALOG)
+  LATER_PKGS=$(awk 'FNR > '${LINE_E}' {if (/^:/) print $2}' $CATALOG)
+  if [ -n "$LATER_PKGS" ]; then
+    # preserve dependencies used by other extensions
+    PRESERVED_LIST=$(
+      for LP in $LATER_PKGS; do
+        for A in $APP_LIST; do
+          awk 'BEGIN {FS="\n";RS=""}
+          $1 == "'${LP}'.tcz" {
+            for (i=2;i<=NF;i++)
+              if ($i ~ /^'${A}'\.tcz$/)
+                print "'"${A} ${LP}"'"
+          }' $TCE_DB
+        done
+      done
+    )
+    # ${A} is a dep of ${LP}
+    if [ -n "$PRESERVED_LIST" ]; then
+      echo "$PRESERVED_LIST" | cut -d ' ' -f 1 | uniq > $CACHE
+      UNLOAD_LIST=$(echo "$APP_LIST" | grep -v -f $CACHE | sed '1!G;h;$!d')
+      rm -f $CACHE
+    else
+      UNLOAD_LIST=$(echo "$APP_LIST" | sed '1!G;h;$!d')
+    fi
+  else
+    # last item
+    PRESERVED_LIST=''
+    UNLOAD_LIST=$(echo "$APP_LIST" | sed '1!G;h;$!d')
+  fi
+}
+
+chk_unloadable() {
+  TCZ="$1"
+  LSOF=$(busybox lsof | grep "/tmp/tcloop/${TCZ}")
+  if [ -n "$LSOF" ]; then
+    printf 'Error, %s in use, ' $TCZ >&2
+    if [ "$TCZ" = "$PKG" ]; then
+      printf 'please kill the proccesses and retry!\n' >&2
+    else
+      printf 'a dep of %s\n' $PKG >&2
+    fi
+    echo "$LSOF" >&2
+    return 1
+  fi
+  return 0
+}
+
+tce_icons() {
+  if [ $1 ]; then
+    awk "FNR < ${1} - 2 || FNR > ${1}" /usr/local/tce.icons > $CACHE
+    (:>> /usr/local/tce.icons) 2> /dev/null || {
+      sudo chown "$(cat /etc/sysconfig/tcuser):staff" /usr/local/tce.icons
+      sudo chmod 775 /usr/local/tce.icons
+    }
+    cat $CACHE > /usr/local/tce.icons
+    rm -f $CACHE
+  fi
+}
+
+unload() {
+  TCZ="$1"
+  printf 'Unloading %s.tcz ...' $1
+  LIST=$(find /tmp/tcloop/${TCZ} -not -type d | cut -d '/' -f 5-)
+  MOUNT_POINT=$(/bin/df | awk '/\/tmp\/tcloop\/'${TCZ}'$/ {print $1}')
+  if [ -n "$MOUNT_POINT" ]; then
+    sudo /bin/umount $MOUNT_POINT 2>> $ERR_LOG || {
+      printf ' failed\nSee %s\n' $ERR_LOG >&2
+      printf ':%s failed\n' $TCZ >> $ERR_LOG
+      printf 'Reloading back to previous status ...' | tee -a $ERR_LOG >&2
+      TCE_RESUME=$(/usr/bin/tce-load -i $PKG 2>&1)
+      if [ "$?" = 0 ]; then
+        printf ' OK\n'
+      else
+        printf ' failed\n'
+      fi | tee -a $ERR_LOG >&2
+      echo "$TCE_RESUME" >> $ERR_LOG
+      exit 1
+    }
+  else
+    # lack of mount point
+    # most likely an empty extension such as Xorg-7.7-dev.tcz
+    sudo busybox rm -fr /tmp/tcloop/${TCZ}/* 2>&1 > /dev/null
+  fi
+  for FILE in $LIST; do
+    # double check the link, some extensions have overlapping files
+    busybox readlink $FILE | grep -q "/tmp/tcloop/${TCZ}/" || continue
+    # prevent "/bin/busybox: Argument list too long" error
+    sudo busybox rm -f $FILE
+  done
+  sudo busybox rm -f  /usr/local/tce.installed/${TCZ}
+  sudo busybox rmdir /tmp/tcloop/${TCZ}
+  if [ -n "$X_WINDOW" ]; then
+    # refresh wbar
+    if [ -f "/usr/local/tce.icons" ]; then
+      tce_icons $(awk '/^c:.*'${TCZ}'/ {print FNR}' /usr/local/tce.icons)
+    fi
+  fi
+  printf ' OK\n'
+  return 0
+}
+
+refresh_catalog() {
+  # refresh catalog
+  if [ -n "$PRESERVED_LIST" ]; then
+    mv $CATALOG $CACHE
+    awk "FNR < ${LINE_S}" $CACHE > $CATALOG
+    awk 'FNR > '${LINE_E}' + 1 {
+      if (/^:/) {
+        split($0, out, /\t/)
+        gsub(/^:/, "", out[1])
+        print ":" out[1] - 1 "\t" out[2]
+      } else print
+    }' $CACHE > $REFRESH_CACHE
+    # ${A} is a dep of ${LP}
+    for A in $(echo "$PRESERVED_LIST" | cut -d ' ' -f 1 | uniq); do
+      LABEL=$(
+        for LP in $(echo "$PRESERVED_LIST" | grep "^$A" | cut -d ' ' -f 2); do
+          awk '/^:[0-9]*\t'${LP}'$/ {print FNR, $2}' $REFRESH_CACHE
+        done | sort -n | head -n 1 | cut -d ' ' -f 2
+      )
+      awk 'BEGIN {FS="\n";RS=""}
+        /:[0-9]*\t'${LABEL}'$/ {print "'${A}'"}
+        {print;print ""}
+      ' $REFRESH_CACHE > $CACHE
+      cat $CACHE > $REFRESH_CACHE
+    done
+    cat $CACHE >> $CATALOG
+    rm -f $CACHE $REFRESH_CACHE
+  else
+    mv $CATALOG $CACHE
+    #awk "FNR < ${LINE_S} || FNR > ${LINE_E} + 1" $CACHE > $CATALOG
+    awk 'BEGIN {order=1}
+    FNR < '${LINE_S}' || FNR > '${LINE_E}' + 1 {
+      if (/^:/) {
+        split($0, out, /\t/)
+        print ":" order++ "\t" out[2]
+      } else print
+    }' $CACHE > $CATALOG
+    rm -f $CACHE
+  fi
+  # refresh database
+  :> $CACHE
+  for L in $(grep '^:' $CATALOG | cut -f 2); do
+    awk 'BEGIN {FS="\n";RS=""}
+      $1 == "'${L}'.tcz" {print;print ""}
+    ' $TCE_DB >> $CACHE
+  done
+  cat $CACHE > $TCE_DB
+  rm -f $CACHE
+}
+
+# main
+# options
+SUPPRESS=0
+FORCE=0
+echo " $* " | grep -q ' \-\-help ' && print_help
+while getopts fhs OPTION
+do
+  case $OPTION in
+    s) SUPPRESS=1 ;;
+    f) FORCE=1 ;;
+    *) print_help ;;
+  esac
+done
+shift $(expr $OPTIND - 1)
+[ "$#" = 0 ] && print_help
+
+# if catalog exists
+[ -f $CATALOG ] || {
+  echo "Error, catalog not found!" >&2
+  print_help
+}
+
+# X server
+X_WINDOW=$(cat /tmp/.X0-lock 2> /dev/null)
+if [ "$FORCE" = 0 ]; then
+  if [ -n "$X_WINDOW" ]; then
+    echo 'Warning, the X server is running, type "force" to ignore.'
+    read ANS
+    [ "$ANS" = "force" ] || print_help
+  fi
+fi
+# sync
+sudo sync
+
+# backup before change
+cat $CATALOG > $BACKUP
+
+# The database should have already been created by tce-cataload
+environment() {
+  sudo mkdir -p $LOG_DIR
+  sudo chmod -R 775 $LOG_DIR
+  sudo chgrp -R staff $LOG_DIR
+}
+
+add_to_db() {
+  echo "${1}.tcz"
+  echo "${1}.tcz" | awk '
+  function dep_scan(name, depfile, line) {
+    if (name) {
+      sub(/KERNEL/, KERNELVER, name)
+      depfile = name ".dep"
+      print name
+      while (getline line < depfile > 0)
+        dep_scan(line)
+      close(depfile)
+    }
+  }
+  BEGIN {KERNELVER="'${KERNELVER}'"}
+  {dep_scan($1)}
+  ' | tail -n +2 | sort -u
+  printf '\n'
+}
+# Recreate one if it can not be located.
+if [ ! -f "$TCE_DB" ]; then
+  (:>> $ERR_LOG) 2> /dev/null || environment
+  touch $TCE_DB
+  for L in $(grep '^:' $CATALOG | cut -f 2); do
+    add_to_db $L >> $TCE_DB
+  done
+fi
+
+# calculate unload order
+ARGS="$@"
+APP=$(
+  for ARG in $ARGS; do
+    ARG="${ARG%.tcz}"
+    chk_log $ARG || continue
+    awk '/^:[0-9]*\t'${ARG}'$/' $CATALOG
+  done | tr -d ':' | sort -rn | cut -f 2
+)
+
+for PKG in $APP; do
+  LINE_E=$(awk '/^:[0-9]*\t'${PKG}'$/ {print FNR}' $CATALOG)
+  LINE_S=$(
+    awk 'BEGIN {FS="\n";RS="";line=1}
+    /:[0-9]*\t'${PKG}'$/ {print line;exit}
+    {line += NF + 1}' $CATALOG
+  )
+  # PRESERVED_LIST, UNLOAD_LIST
+  prepare_list
+  for LOOP in $UNLOAD_LIST; do
+    chk_unloadable $LOOP || continue 2
+  done
+  for LOOP in $UNLOAD_LIST; do
+    STATUS=0
+    if [ "$SUPPRESS" = 1 ]; then
+      unload $LOOP > /dev/null && STATUS=1 || break
+    else
+      unload $LOOP && STATUS=1 || break
+    fi
+  done
+  [ "$STATUS" = 0 ] || refresh_catalog
+done
+
+if [ -n "$X_WINDOW" ]; then
+  if [ $(busybox pidof wbar) ]; then
+    killall wbar 2> /dev/null
+    wbar > /dev/null &
+  fi
+fi
