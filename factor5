@@ -82,7 +82,7 @@ fi
 if [[ $1 = "sshd" ]]
 then
     ssh-keygen -q -N "" -t rsa -b 4096 -f ~/.ssh_host_key
-    & sshd -d -p 2222 -h ~/.ssh_host_key
+    sshd -d -p 2222 -h ~/.ssh_host_key
 fi
 
 
